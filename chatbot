@@ -1,0 +1,93 @@
+import streamlit as st
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import StrOutputParser
+from langchain_openai import ChatOpenAI  # Swap with Grok/xAI if using their API
+from langchain.tools import tool
+from langchain.agents import create_tool_calling_agent, AgentExecutor
+import yfinance as yf
+import plotly.graph_objects as go
+import numpy as np
+
+# Disclaimer
+st.sidebar.warning("This is a demo AI agent for educational purposes. Not financial advice. Consult professionals.")
+
+# LLM setup (replace API key; for Grok, use equivalent from https://x.ai/api)
+llm = ChatOpenAI(model="gpt-4o-mini", api_key=st.secrets["OPENAI_API_KEY"])  # Add your key to Streamlit secrets
+
+# Custom tools (modular—easy to add more)
+@tool
+def get_stock_data(ticker: str) -> str:
+    """Fetch live stock/ETF fundamentals and data."""
+    try:
+        data = yf.Ticker(ticker).info
+        fundamentals = {
+            'Price': data.get('regularMarketPrice', 'N/A'),
+            'Sector': data.get('sector', 'N/A'),
+            'Market Cap': data.get('marketCap', 'N/A'),
+            'P/E Ratio': data.get('trailingPE', 'N/A'),
+            'EPS': data.get('trailingEps', 'N/A'),
+            'Dividend Yield': data.get('dividendYield', 'N/A'),
+            'Beta': data.get('beta', 'N/A'),
+            '52-Week High': data.get('fiftyTwoWeekHigh', 'N/A'),
+            '52-Week Low': data.get('fiftyTwoWeekLow', 'N/A')
+        }
+        return f"Fundamentals for {ticker}: {fundamentals}"
+    except Exception as e:
+        return f"Error fetching data: {str(e)}"
+
+@tool
+def get_stock_news(ticker: str, num_articles: int = 5) -> str:
+    """Fetch most recent news for a stock/ETF."""
+    try:
+        news = yf.Ticker(ticker).news[:num_articles]
+        summaries = [f"{item['title']} (Source: {item['publisher']}, {item['link']})" for item in news]
+        return f"Latest news for {ticker}:\n" + "\n".join(summaries)
+    except Exception as e:
+        return f"Error fetching news: {str(e)}"
+
+@tool
+def monte_carlo_simulation(ticker: str, initial_investment: float = 10000, years: int = 5, simulations: int = 100) -> str:
+    """Run a simple Monte Carlo simulation for portfolio growth."""
+    try:
+        data = yf.download(ticker, period="5y")['Close']
+        returns = data.pct_change().dropna()
+        mu, sigma = returns.mean(), returns.std()
+        results = []
+        for _ in range(simulations):
+            sim_returns = np.random.normal(mu, sigma, 252 * years)  # Assuming 252 trading days/year
+            sim_prices = initial_investment * np.exp(np.cumsum(sim_returns))
+            results.append(sim_prices[-1])
+        median = np.median(results)
+        return f"Median projected value after {years} years: ${median:.2f} (based on {simulations} simulations)"
+    except Exception as e:
+        return f"Error in simulation: {str(e)}"
+
+tools = [get_stock_data, get_stock_news, monte_carlo_simulation]
+
+# Agent prompt (original twist: emphasize personalized, flexible advice)
+prompt = ChatPromptTemplate.from_messages([
+    ("system", "You are Wealth Coach AI, inspired by JP Morgan's tools but original. Provide quick, tailored wealth management insights including fundamentals and news. Use tools for data. Be flexible for user customizations."),
+    ("human", "{input}"),
+    ("placeholder", "{agent_scratchpad}"),
+])
+
+# Create agent (flexible—agent can call tools dynamically)
+agent = create_tool_calling_agent(llm, tools, prompt)
+agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
+
+# Streamlit UI
+st.title("Wealth Coach AI Demo")
+st.write("Ask about stocks, portfolios, fundamentals, news, or simulations (e.g., 'Analyze AAPL fundamentals and news' or 'Simulate $10k in SPY over 5 years').")
+
+user_input = st.text_input("Your question:")
+if st.button("Get Advice"):
+    with st.spinner("Thinking..."):
+        response = agent_executor.invoke({"input": user_input})
+    st.write(response['output'])
+    
+    # Visual: Add plotly chart for simulations (if applicable)
+    if "monte_carlo" in response['output'].lower():  # Simple check; improve as needed
+        # Generate example fig (customize based on tool output)
+        fig = go.Figure(go.Scatter(y=np.random.normal(10000, 2000, 100), mode='lines', name='Simulation Path'))
+        fig.update_layout(title='Sample Monte Carlo Paths', xaxis_title='Time', yaxis_title='Value ($)')
+        st.plotly_chart(fig, use_container_width=True)
